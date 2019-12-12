@@ -1,0 +1,302 @@
+# -*- coding: utf-8 -*-
+import pandas as pd 
+import matplotlib.pyplot as plt
+import math
+import numpy as np
+from decimal import Decimal
+from openpyxl import load_workbook
+import warnings
+import sys
+import argparse
+import copy
+import xlrd
+import xlwt
+
+try:
+    parser = argparse.ArgumentParser(description='Parameters for this formula')
+    parser.add_argument('-i',type=str)
+    parser.add_argument('-o',type=str)
+    parser.add_argument('-L2',dest='L2',type=float,default=1)
+    parser.add_argument('-a2',dest='a2',type=float,default=10)
+    parser.add_argument('-b2',dest='b2',type=float,default=0.15)
+    parser.add_argument('-M',dest='M',type=float,default=1.2)
+    parser.add_argument('-T',dest='T',type=float,default=0.5)
+    parser.add_argument('-L1',dest='L1',type=float,default=100)
+    parser.add_argument('-a1',dest='a1',type=float,default=80)
+    parser.add_argument('-b1',dest='b1',type=float,default=0.15)
+    parser.add_argument('-MHC_I_weight',nargs='?',const=1,type=int,default=50)
+    parser.add_argument('-Exp_weight',nargs='?',const=1,type=int,default=20)
+    parser.add_argument('-Mut_lev_weight',nargs='?',const=1,type=int,default=10)
+    parser.add_argument('-AF_weight',nargs='?',const=1,type=int,default=20)
+    parser.add_argument('-MT_weight',nargs='?',const=1,type=int,default=5)
+    
+    args = parser.parse_args()
+    Filename = args.i
+    OutFilename = args.o
+    
+    L2 = args.L2
+    a2 = args.a2
+    b2 = args.b2
+    M = args.M
+    T = args.T
+    L1 = args.L1
+    a1 = args.a1
+    b1 = args.b1
+    MHC_I_weight = args.MHC_I_weight
+    Exp_weight = args.Exp_weight
+    Mut_lev_weight = args.Mut_lev_weight
+    AF_weight = args.AF_weight
+    MT_weight = args.MT_weight
+except:
+    print(
+        '''
+        Please check your input
+              python Mutation_iNeo_Score.py  <input> <output.prefix> <parameters>
+              parameter includes:
+              -D * 
+              -N * 
+              -L1 * 
+              -a1 * 
+              -b1 * 
+              -M * 
+              -T * 
+              -L2 * 
+              -a2 * 
+              -b2 * 
+              -BR * 
+              -E *
+              -Level * 
+              -AF * 
+              -A_Class_DNA_AF *
+              -A_Class_RNA_AF * 
+              -A_Class_RPKM * 
+              -A_Class_BHIA_I * 
+              -B_Class_DNA_AF_Value * 
+              -B_Class_RNA_AF_Value * 
+              -B_Class_RPKM * 
+              -B_Class_BHIA_I *
+          '''
+          )
+    exit()
+
+#归一化函数
+def normalization(data):
+    result = []
+    for i in data:
+        norm = (i - min(data))/(max(data) -min(data))
+        result.append(norm)
+    return result
+#激励函数
+def Sigmoid(x):
+    y = 1/(1+ np.exp(-10*x))
+    y = y - 0.5
+    return y
+#生长曲线函数
+def Grow(x,L,a,b):
+    y = L/(1 + a*np.exp(-b*x))
+    return y
+#转化ABC
+def Mut_lev_ABC(x):
+    if(x == 'A'):
+        return 0.8802
+    if(x == 'B'):
+        return 0.0855
+    if(x == 'C'):
+        return 0.001
+    if(x == '.'):
+        return 0.001
+    if(x not in 'ABC'):
+        return 0.001
+#二选一
+def choose_exist(x,y):
+    if(x == '.' and y != '.'):
+        return y
+    elif(y == '.' and x != '.'):
+        return x
+    elif(x == '.' and y == '.'):
+        return 0
+    elif(x != '.' and y!= '.'):
+        return max(x,y)
+#计算排名
+def Rank(x,array):
+    array = sorted(array,reverse=False)
+    x_index = array.index(x)
+    rank = x_index/len(array)
+    return rank
+#将缺失值转化为列最小值
+def missing_val(col):
+    temp = [i for i in col if i != '.']
+    col_min = min(temp)
+    col_Copy = copy.copy(col)
+    for i in range(len(Mut_level)):
+        if(col_Copy[i] == '.'):
+            col_Copy[i] = col_min
+        else:
+            pass
+    return col_Copy
+#pd中打印出整行
+def get_line(x):
+    y = ''
+    for i in x:
+        y = str(y) + '\t' + str(i)
+    return(y)
+
+pre_neo_score = []
+pre_neo_score2 = []
+bonus = []
+
+input = pd.read_csv(Filename,sep='\t',header=0,index_col=False)
+I_AC = list(input['I_AC'])
+II_AC = list(input['II_AC'])
+AC = []
+for i in range(len(I_AC)):
+    AC.append(float(I_AC[i]) + float(II_AC[i]))
+k = 3/(max(AC)-min(AC))
+
+DNA_AF_array = []
+RNA_AF_array = []
+Exp_array = []
+
+for i in range(len(input)):
+    DNA_AF_array.append(float(choose_exist(input['DNA_AF'][i],input['DNA_bamcount_AF'][i])))
+    RNA_AF_array.append(float(choose_exist(input['RNA_AF'][i],input['RNA_bamcount_AF'][i])))
+    Exp_array.append(float(choose_exist(input['RPKM'][i],input['TCGA_exp'][i])))
+
+output_data = pd.DataFrame(columns=['sample','Chr','Position','Ref', 'Alt','Mut_type','AA_change','Gene_name','ENSG',
+                     'DNA_AF', 'DNA_AF_Rank','AF_calculate','RNA_AF','RNA_AF_Rank','RNAF_calculate', 
+                     'M', 'M_calculate','DNA_Mut_level','RNA_Mutation_level','RPKM', 'RPKM_Rank',
+                     'RPKM_calculate','MHC_I_epitope','MHC_I_Rank','MHC_I_calculate','MHC_II_epitope', 'MHC_II_Rank','MHC_II_calculate',
+                     'DG', 'I_AC','I_AC_rank','II_AC','II_AC_rank','I_SB','I_SB_rank','II_SB','II_SB_rank','pre_Neo_Score','pre_Neo_Score_2','Bonus'])
+
+for i in range(len(input)):
+    line = input.iloc[i][:]
+    sample = line.sample
+    Chr = line.Chr
+    Position = line.Position
+    Ref = line.Ref
+    Alt = line.Alt
+    Mut_type = line.Mut_type
+    AA_change = line.AA_change
+    Gene_name = line.Gene_name
+    ENSG = line.ENSG
+    Mut_AA_num = line.Mut_AA_num
+    DNA_AF = line.DNA_AF
+    DNA_bamcount_AF = line.DNA_bamcount_AF
+    RNA_AF = line.RNA_AF
+    RNA_bamcount_AF = line.RNA_bamcount_AF
+    DNA_Mut_lev = line.DNA_Mut_lev
+    RNA_Mut_lev = line.RNA_Mut_lev
+    RPKM = line.RPKM
+    TCGA_exp = line.TCGA_exp
+    Is_driver_gene = 0
+    num_mut_I_SB_WB_epitope = line.num_mut_I_SB_WB_epitope
+    num_mut_II_SB_WB_epitope = line.num_mut_II_SB_WB_epitope
+    I_AC = line.I_AC
+    II_AC = line.II_AC
+    num_mut_I_SB_epitope = line.num_mut_I_SB_epitope
+    num_mut_II_SB_epitope = line.num_mut_II_SB_epitope
+#transform value
+    DNA_AF_one = float(choose_exist(DNA_AF,DNA_bamcount_AF))
+    RNA_AF_one = float(choose_exist(RNA_AF,RNA_bamcount_AF))
+    Exp_one = float(choose_exist(RPKM,TCGA_exp))
+    DNA_AF_trans = Grow(float(DNA_AF_one),0.5,80,10)
+    RNA_AF_trans = Grow(float(RNA_AF_one),3,25,8)
+    AF_trans = DNA_AF_trans * RNA_AF_trans
+    AF_trans = AF_trans 
+    Exp_trans = Grow(float(Exp_one)/100,3,30,12)
+    MHC_I_trans = Grow(num_mut_I_SB_WB_epitope,100,80,0.35)/100
+    Mut_num_trans = math.tanh(Mut_AA_num/10)
+    AC_norm = k*((I_AC+II_AC)-min(AC))
+    MHC_II_trans = Grow(num_mut_II_SB_WB_epitope,L1,a1,b1)/100
+#    DNA_Mut_lev_trans = Mut_lev_ABC(DNA_Mut_lev)
+#    RNA_Mut_lev_trans = Mut_lev_ABC(RNA_Mut_lev)
+    DNA_Mut_lev_trans = DNA_Mut_lev
+    RNA_Mut_lev_trans = RNA_Mut_lev
+#calculate rank
+    DNA_AF_rank = Rank(float(DNA_AF_one),DNA_AF_array)
+    RNA_AF_rank = Rank(float(RNA_AF_one),RNA_AF_array)
+    Exp_rank = Rank(float(Exp_one),Exp_array)
+    MHC_I_rank = Rank(num_mut_I_SB_WB_epitope,list(input['num_mut_I_SB_WB_epitope']))
+    MHC_II_rank = Rank(num_mut_II_SB_WB_epitope,list(input['num_mut_II_SB_WB_epitope']))
+    I_AC_rank = Rank(I_AC,list(input['I_AC']))
+    II_AC_rank = Rank(II_AC,list(input['II_AC']))
+    I_SB_rank = Rank(num_mut_I_SB_epitope,list(input['num_mut_I_SB_epitope']))
+    II_SB_rank = Rank(num_mut_II_SB_epitope,list(input['num_mut_II_SB_epitope']))
+#formula calculation    
+    temp_neo_score = MHC_I_weight*MHC_I_trans + Exp_weight*Exp_trans + AF_weight*AF_trans + MT_weight*Mut_num_trans + Mut_lev_weight*DNA_Mut_lev_trans*RNA_Mut_lev_trans
+    temp_neo_score2 = MHC_I_trans*Exp_trans*AF_trans*Mut_num_trans
+    temp_bonus = AC_norm + Is_driver_gene + MHC_II_trans*0.6
+#filter
+    if(float(DNA_AF_one) < 0.05 or float(RNA_AF_one) < 0.05 or DNA_AF_rank <0.1 or RNA_AF_rank<0.1):
+        temp_neo_score = 0
+        temp_neo_score2 = 0
+        temp_bonus = 0
+#    if(RPKM<1):
+#        temp_neo_score = 0
+#        temp_neo_score2 = 0
+#        temp_bonus = 0
+    if(float(Exp_one) < 0.5):
+        temp_neo_score = 0
+        temp_neo_score2 = 0
+        temp_bonus = 0
+#    if(MHC_I_rank < 0.2):        
+#        temp_neo_score = 0
+#        temp_neo_score2 = 0
+#        temp_bonus = 0
+#put data into dataframe
+    new = [sample,Chr,Position,Ref,Alt,Mut_type,AA_change,Gene_name,ENSG,DNA_AF_one,DNA_AF_rank,DNA_AF_trans,RNA_AF_one,RNA_AF_rank,RNA_AF_trans,Mut_AA_num,
+          Mut_num_trans,DNA_Mut_lev_trans,RNA_Mut_lev_trans,Exp_one,Exp_rank,Exp_trans,num_mut_I_SB_WB_epitope,MHC_I_rank,MHC_I_trans,num_mut_II_SB_WB_epitope,
+          MHC_II_rank,MHC_II_trans,Is_driver_gene,I_AC,I_AC_rank,II_AC,II_AC_rank,num_mut_I_SB_epitope,I_SB_rank,num_mut_II_SB_epitope,
+            II_SB_rank,temp_neo_score,temp_neo_score2,temp_bonus]
+    
+    output_data.loc[i] = new
+    
+    pre_neo_score.append(temp_neo_score)
+    pre_neo_score2.append(temp_neo_score2)
+    bonus.append(temp_bonus)
+
+pre_neo_score_range = max(pre_neo_score) - min(pre_neo_score)
+pre_neo_score_range2 = max(pre_neo_score2) - min(pre_neo_score2)
+pre_neo_score_norm = normalization(pre_neo_score)
+pre_neo_score_norm2 = normalization(pre_neo_score2)
+bonus_norm = normalization(bonus)
+output_data['pre_score_norm'] = pre_neo_score_norm
+output_data['pre_score_norm_2'] = pre_neo_score_norm2
+output_data['bonus_norm'] = bonus_norm
+output_data['Neo_score'] = output_data['pre_Neo_Score'] + pre_neo_score_range*0.2*output_data['bonus_norm']
+output_data['Neo_score_2'] = output_data['pre_Neo_Score_2'] + pre_neo_score_range2*0.2*output_data['bonus_norm']
+output_data['Neo_score_norm'] = normalization(output_data['Neo_score'])
+output_data['Neo_score_norm_2'] = normalization(output_data['Neo_score_2'])
+
+for i in range(len(output_data['Neo_score_norm'])):
+    if(output_data.loc[i,'DNA_AF_Rank'] >= 0.5 and output_data.loc[i,'RNA_AF_Rank'] >= 0.5 and output_data.loc[i,'RPKM_Rank'] >= 0.5
+      and output_data.loc[i,'MHC_I_Rank'] >= 0.5 and output_data.loc[i,'MHC_II_Rank'] >= 0.5):
+        output_data.loc[i,'Neo_score_norm'] = 10*output_data.loc[i,'Neo_score_norm']
+    if(output_data.loc[i,'I_SB'] > 0):
+#        output_data.loc[i,'Neo_score_norm'] = 2*output_data.loc[i,'Neo_score_norm']
+        I_SB_w = output_data.loc[i,'I_SB']
+        if output_data.loc[i,'I_SB'] > 20:
+            I_SB_w = 20
+        II_SB_w = output_data.loc[i,'II_SB']
+        if output_data.loc[i,'II_SB'] > 20:
+            II_SB_w = 20
+        I_AC_w = output_data.loc[i,'I_AC']
+        II_AC_w = output_data.loc[i,'II_AC']
+        output_data.loc[i,'Neo_score_norm_2'] = output_data.loc[i,'Neo_score_norm_2']*(1+0.01*I_SB_w + 0.0025*II_SB_w)
+output_data['Neo_score_norm_3'] = normalization(output_data['Neo_score_norm_2'])
+for i in range(len(output_data['Neo_score_norm_3'])):
+    zero_num = 0
+    if(output_data.loc[i,'I_SB']==0):
+        zero_num = zero_num + 1
+    if(output_data.loc[i,'II_SB']==0):
+        zero_num = zero_num + 1
+    if(output_data.loc[i,'I_AC']==0):
+        zero_num = zero_num + 1
+    if(output_data.loc[i,'II_AC']==0):
+        zero_num = zero_num + 1
+    if(zero_num>=3):
+        output_data.loc[i,'Neo_score_norm_3'] = 0.4*output_data.loc[i,'Neo_score_norm_3']
+output_data.sort_values('Neo_score_norm_3',inplace=True,ascending=False)
+result = pd.ExcelWriter(OutFilename)
+output_data.to_excel(excel_writer=result,sheet_name='Neo_score',startcol=0,index=False)
+result.save()

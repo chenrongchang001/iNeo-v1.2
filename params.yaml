@@ -1,0 +1,26 @@
+# yaml
+DNA_AF_paras:
+        L: 0.5
+        a: 80
+        b: 10
+RNA_AF_paras:
+        L: 2.5
+        a: 25
+        b: 8
+RPKM_paras:
+        L: 2.8
+        a: 30
+        b: 12
+MHC_I_paras:
+        L: 1
+        a: 60
+        b: 0.15
+MHC_II_paras:
+        L: 1
+        a: 80
+        b: 0.15
+MHC_II_weight: 0.3
+bonus_weight: 0.2
+I_SB_weight: 0.05
+II_SB_weight: 0.01
+diminish: 0.4
